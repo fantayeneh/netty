@@ -23,6 +23,7 @@ final class PoolThreadCache {
     final PoolArena<byte[]> heapArena;
     final PoolArena<ByteBuffer> directArena;
 
+    // TODO: Lazy init to minimize overhead
     private final PoolChunkCache<byte[]> smallHeapCache;
     private final PoolChunkCache<ByteBuffer> smallDirectCache;
 
@@ -33,50 +34,95 @@ final class PoolThreadCache {
         this.heapArena = heapArena;
         this.directArena = directArena;
         if (heapArena != null) {
-            smallHeapCache = new PoolChunkCache<byte[]>();
+            smallHeapCache = new SubPagePoolChunkCache<byte[]>(128);
         } else {
             smallHeapCache = null;
         }
         if (directArena != null) {
-            smallDirectCache = new PoolChunkCache<ByteBuffer>();
+            smallDirectCache = new SubPagePoolChunkCache<ByteBuffer>(128);
         } else {
             smallDirectCache = null;
         }
     }
 
-    final static class PoolChunkCache<T> {
-        private Entry<T> first;
-        private Entry<T> last;
 
-        public void offer(PoolChunk<T> chunk, long handle) {
-            Entry<T> entry = new Entry<T>(chunk, handle);
-            if (first == null) {
-                first = last = entry;
-            } else {
-                last.next = entry;
+    final static class SubPagePoolChunkCache<T> extends PoolChunkCache<T> {
+        SubPagePoolChunkCache(int size) {
+            super(size);
+        }
+
+        @Override
+        protected void initBuf(
+                PoolChunk<T> chunk, long handle, PooledByteBuf<T> buf, int reqCapacity, int normCapacity) {
+            chunk.initBufWithSubpage(buf, handle, reqCapacity);
+        }
+    }
+
+    final static class NormalPoolChunkCache<T> extends PoolChunkCache<T> {
+        NormalPoolChunkCache(int size) {
+            super(size);
+        }
+
+        @Override
+        protected void initBuf(
+                PoolChunk<T> chunk, long handle, PooledByteBuf<T> buf, int reqCapacity, int normCapacity) {
+            chunk.initBuf(buf, handle, reqCapacity);
+        }
+    }
+
+    abstract static class PoolChunkCache<T> {
+        private final Entry<T>[] entries;
+        int head;
+        int tail;
+
+        @SuppressWarnings("unchecked")
+        PoolChunkCache(int size) {
+            entries = new Entry[size];
+            for (int i = 0; i < entries.length; i++) {
+                entries[i] = new Entry<T>();
             }
         }
 
-        public Entry<T> poll() {
-            Entry<T> entry = first;
-            if (entry == null) {
-                return null;
+        protected abstract void initBuf(PoolChunk<T> chunk, long handle,
+                                        PooledByteBuf<T> buf, int reqCapacity, int normCapacity);
+
+        /**
+         * Add to cache if not already full.
+         */
+        public boolean add(PoolChunk<T> chunk, long handle) {
+            Entry<T> entry = entries[tail];
+            if (entry.chunk != null) {
+                // cache is full
+                return false;
             }
-            first = entry.next;
-            if (first == null) {
-                last = null;
+            entry.chunk = chunk;
+            entry.handle = handle;
+            tail = nextIdx(tail);
+            return true;
+        }
+
+        /**
+         * Allocate something out of the cache if possible
+         */
+        public boolean allocate(PooledByteBuf<T> buf, int reqCapacity, int normCapacity) {
+            Entry<T> entry = entries[head];
+            if (entry.chunk == null) {
+                return false;
             }
-            return entry;
+            initBuf(entry.chunk, entry.handle, buf, reqCapacity, normCapacity);
+            entry.chunk = null;
+            entry.handle = -1;
+            head = nextIdx(head);
+            return true;
+        }
+
+        private int nextIdx(int index) {
+            return (index + 1) % entries.length;
         }
 
         static final class Entry<T> {
-            private Entry<T> next;
-            final PoolChunk<T> chunk;
-            final long handle;
-            Entry(PoolChunk<T> chunk, long handle) {
-                this.chunk = chunk;
-                this.handle = handle;
-            }
+            PoolChunk<T> chunk;
+            long handle;
         }
     }
 }
