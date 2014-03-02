@@ -77,6 +77,11 @@ final class PoolThreadCache {
 
         @SuppressWarnings("unchecked")
         PoolChunkCache(int size) {
+            if ((size & -size) != size) {
+                // check if power of two as this is needed for bitwise operations
+                throw new IllegalArgumentException("size must be power of two");
+            }
+
             entries = new Entry[size];
             for (int i = 0; i < entries.length; i++) {
                 entries[i] = new Entry<T>();
@@ -117,7 +122,8 @@ final class PoolThreadCache {
         }
 
         private int nextIdx(int index) {
-            return (index + 1) % entries.length;
+            // use bitwise operation as this is faster as using modulo.
+            return (index + 1) & entries.length -1;
         }
 
         static final class Entry<T> {
