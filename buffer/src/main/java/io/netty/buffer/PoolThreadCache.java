@@ -23,11 +23,14 @@ final class PoolThreadCache {
     final PoolArena<byte[]> heapArena;
     final PoolArena<ByteBuffer> directArena;
 
-    // TODO: Lazy init to minimize overhead
-    private final PoolChunkCache<byte[]> tinySubPageHeapCache;
-    private final PoolChunkCache<byte[]> smallSubPageHeapCache;
-    private final PoolChunkCache<ByteBuffer> tinySubPageDirectCache;
-    private final PoolChunkCache<ByteBuffer> smallSubPageDirectCache;
+    // These are lazy initialized when something is added to the cache to minimize memory overhead for Threads that
+    // only allocate buffers but never free them. As free is most of the times done by the EventLoop itself.
+    private PoolChunkCache<byte[]> tinySubPageHeapCache;
+    private PoolChunkCache<byte[]> smallSubPageHeapCache;
+    private PoolChunkCache<byte[]> normalHeapCache;
+    private PoolChunkCache<ByteBuffer> tinySubPageDirectCache;
+    private PoolChunkCache<ByteBuffer> smallSubPageDirectCache;
+    private PoolChunkCache<ByteBuffer> normalDirectCache;
 
     // TODO: Test if adding padding helps under contention
     //private long pad0, pad1, pad2, pad3, pad4, pad5, pad6, pad7;
@@ -35,114 +38,135 @@ final class PoolThreadCache {
     PoolThreadCache(PoolArena<byte[]> heapArena, PoolArena<ByteBuffer> directArena) {
         this.heapArena = heapArena;
         this.directArena = directArena;
-        if (heapArena != null) {
-            tinySubPageHeapCache = new SubPagePoolChunkCache<byte[]>(128);
-            smallSubPageHeapCache = new SubPagePoolChunkCache<byte[]>(128);
-        } else {
-            tinySubPageHeapCache = null;
-            smallSubPageHeapCache = null;
+    }
+
+    /**
+     * Different types of caches for the different sizes.
+     */
+    enum CacheType {
+        TINY,
+        SMALL,
+        NORMAL
+    }
+
+    @SuppressWarnings({ "unchecked", "rawtypes " })
+    boolean allocate(PoolArena area, CacheType size, PooledByteBuf buf, int reqCapacity) {
+        PoolChunkCache cache = cacheForSize(area, size, false);
+        if (cache == null) {
+            // no cache found so just return false here
+            return false;
         }
-        if (directArena != null) {
-            tinySubPageDirectCache = new SubPagePoolChunkCache<ByteBuffer>(128);
-            smallSubPageDirectCache = new SubPagePoolChunkCache<ByteBuffer>(128);
-        } else {
-            tinySubPageDirectCache = null;
-            smallSubPageDirectCache = null;
+        return cache.allocate(buf, reqCapacity);
+    }
+
+    @SuppressWarnings({ "unchecked", "rawtypes" })
+    boolean cache(PoolArena area, CacheType size, PoolChunk chunk, long handle) {
+        PoolChunkCache cache = cacheForSize(area, size, true);
+        if (cache == null) {
+            // no cache found so just return false here
+            return false;
+        }
+        return cache.add(chunk, handle);
+    }
+
+    /**
+     * Find the right cache for the given {@link PoolArena} and {@link CacheType}. This returns {@code null} if
+     * no cache for the specific type exists at all.
+     *
+     * TODO: Maybe use different sizes for the caches like bigger ones for TINY and SMALL and smaller cache for  NORMAL.
+     */
+    @SuppressWarnings({ "unchecked", "rawtypes" })
+    private PoolChunkCache cacheForSize(PoolArena area, CacheType size, boolean lazyCreate) {
+        switch (size) {
+            case TINY:
+                if (area == directArena) {
+                    if (tinySubPageDirectCache == null && lazyCreate) {
+                        tinySubPageDirectCache = new SubPagePoolChunkCache<ByteBuffer>(128);
+                    }
+                    return tinySubPageDirectCache;
+                }
+                if (area == heapArena) {
+                    if (tinySubPageHeapCache == null && lazyCreate) {
+                        tinySubPageHeapCache = new SubPagePoolChunkCache<byte[]>(128);
+                    }
+                    return tinySubPageHeapCache;
+                }
+                return null;
+            case SMALL:
+                if (area == directArena) {
+                    if (smallSubPageDirectCache == null && lazyCreate) {
+                        smallSubPageDirectCache = new SubPagePoolChunkCache<ByteBuffer>(128);
+                    }
+                    return smallSubPageDirectCache;
+                }
+                if (area == heapArena) {
+                    if (smallSubPageHeapCache == null && lazyCreate) {
+                        smallSubPageHeapCache = new SubPagePoolChunkCache<byte[]>(128);
+                    }
+                    return smallSubPageHeapCache;
+                }
+                return null;
+            case NORMAL:
+                if (area == directArena) {
+                    if (normalDirectCache == null && lazyCreate) {
+                        normalDirectCache = new NormalPoolChunkCache<ByteBuffer>(128);
+                    }
+                    return normalDirectCache;
+                }
+                if (area == heapArena) {
+                    if (normalHeapCache == null && lazyCreate) {
+                        normalHeapCache = new NormalPoolChunkCache<byte[]>(128);
+                    }
+                    return normalHeapCache;
+                }
+                return null;
+            default:
+                return null;
         }
     }
 
-    @SuppressWarnings({"unchecked", "rawtypes"})
-    public boolean allocateTinySubPage(PoolArena area, PooledByteBuf buf, int reqCapacity, int normCapacity) {
-        if (area == directArena) {
-            if (tinySubPageDirectCache == null) {
-                return false;
-            }
-            return tinySubPageDirectCache.allocate(buf, reqCapacity, normCapacity);
-        }
-        if (area == heapArena) {
-            if (tinySubPageHeapCache == null) {
-                return false;
-            }
-            return tinySubPageHeapCache.allocate(buf, reqCapacity, normCapacity);
-        }
-        return false;
-    }
-
-    @SuppressWarnings({"unchecked", "rawtypes"})
-    public boolean allocateSmallSubPage(PoolArena area, PooledByteBuf buf, int reqCapacity, int normCapacity) {
-        if (area == directArena) {
-            if (smallSubPageDirectCache == null) {
-                return false;
-            }
-            return smallSubPageDirectCache.allocate(buf, reqCapacity, normCapacity);
-        }
-        if (area == heapArena) {
-            if (smallSubPageHeapCache == null) {
-                return false;
-            }
-            return smallSubPageHeapCache.allocate(buf, reqCapacity, normCapacity);
-        }
-        return false;
-    }
-
-    @SuppressWarnings({"unchecked", "rawtypes"})
-    public boolean cacheTinySubPage(PoolArena area, PoolChunk chunk, long handle) {
-        if (area == directArena) {
-            if (tinySubPageDirectCache == null) {
-                return false;
-            }
-            return tinySubPageDirectCache.add(chunk, handle);
-        }
-        if (area == heapArena) {
-            if (tinySubPageHeapCache == null) {
-                return false;
-            }
-            return tinySubPageHeapCache.add(chunk, handle);
-        }
-        return false;
-    }
-
-    @SuppressWarnings({"unchecked", "rawtypes"})
-    public boolean cacheSmallSubPage(PoolArena area, PoolChunk chunk, long handle) {
-        if (area == directArena) {
-            if (smallSubPageDirectCache == null) {
-                return false;
-            }
-            return smallSubPageDirectCache.add(chunk, handle);
-        }
-        if (area == heapArena) {
-            if (smallSubPageHeapCache == null) {
-                return false;
-            }
-            return smallSubPageHeapCache.add(chunk, handle);
-        }
-        return false;
-    }
-
-    final static class SubPagePoolChunkCache<T> extends PoolChunkCache<T> {
+    /**
+     * Cache used for buffers which are backed by NORMAL size.
+     *
+     * @param <T>
+     */
+    static final class SubPagePoolChunkCache<T> extends PoolChunkCache<T> {
         SubPagePoolChunkCache(int size) {
             super(size);
         }
 
         @Override
         protected void initBuf(
-                PoolChunk<T> chunk, long handle, PooledByteBuf<T> buf, int reqCapacity, int normCapacity) {
+                PoolChunk<T> chunk, long handle, PooledByteBuf<T> buf, int reqCapacity) {
             chunk.initBufWithSubpage(buf, handle, reqCapacity);
         }
     }
 
-    final static class NormalPoolChunkCache<T> extends PoolChunkCache<T> {
+    /**
+     * Cache used for buffers which are backed by TINY or SMALL size.
+     *
+     * @param <T>
+     */
+    static final class NormalPoolChunkCache<T> extends PoolChunkCache<T> {
         NormalPoolChunkCache(int size) {
             super(size);
         }
 
         @Override
         protected void initBuf(
-                PoolChunk<T> chunk, long handle, PooledByteBuf<T> buf, int reqCapacity, int normCapacity) {
+                PoolChunk<T> chunk, long handle, PooledByteBuf<T> buf, int reqCapacity) {
             chunk.initBuf(buf, handle, reqCapacity);
         }
     }
 
+    /**
+     * Cache of {@link PoolChunk} and handles which can be used to allocate a buffer without locking at all.
+     *
+     * TODO:    Think about if it may make sense to make it a real circular buffer and start to replace the oldest
+     *          entries once it is full. This may give less fragmentations but the cost of extra updates of the
+     *          entries. But updating the entries should be quite cheap.
+     * @param <T>
+     */
     abstract static class PoolChunkCache<T> {
         private final Entry<T>[] entries;
         private int head;
@@ -161,8 +185,11 @@ final class PoolThreadCache {
             }
         }
 
+        /**
+         * Init the {@link PooledByteBuf} using the provided chunk and handle with the capacity restrictions.
+         */
         protected abstract void initBuf(PoolChunk<T> chunk, long handle,
-                                        PooledByteBuf<T> buf, int reqCapacity, int normCapacity);
+                                        PooledByteBuf<T> buf, int reqCapacity);
 
         /**
          * Add to cache if not already full.
@@ -182,21 +209,21 @@ final class PoolThreadCache {
         /**
          * Allocate something out of the cache if possible
          */
-        public boolean allocate(PooledByteBuf<T> buf, int reqCapacity, int normCapacity) {
+        public boolean allocate(PooledByteBuf<T> buf, int reqCapacity) {
             Entry<T> entry = entries[head];
             if (entry.chunk == null) {
                 return false;
             }
-            initBuf(entry.chunk, entry.handle, buf, reqCapacity, normCapacity);
+            initBuf(entry.chunk, entry.handle, buf, reqCapacity);
+            // only null out the chunk as we only use the chunk to check if the buffer is full or not.
             entry.chunk = null;
-            entry.handle = -1;
             head = nextIdx(head);
             return true;
         }
 
         private int nextIdx(int index) {
             // use bitwise operation as this is faster as using modulo.
-            return (index + 1) & entries.length -1;
+            return (index + 1) & entries.length - 1;
         }
 
         static final class Entry<T> {

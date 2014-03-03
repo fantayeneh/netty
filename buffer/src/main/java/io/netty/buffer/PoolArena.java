@@ -101,14 +101,14 @@ abstract class PoolArena<T> {
             int tableIdx;
             PoolSubpage<T>[] table;
             if ((normCapacity & 0xFFFFFE00) == 0) { // < 512
-                if (cache.allocateTinySubPage(this, buf, reqCapacity, normCapacity)) {
+                if (cache.allocate(this, PoolThreadCache.CacheType.TINY, buf, reqCapacity)) {
                     // was able to allocate out of the cache so move on
                     return;
                 }
                 tableIdx = normCapacity >>> 4;
                 table = tinySubpagePools;
             } else {
-                if (cache.allocateSmallSubPage(this, buf, reqCapacity, normCapacity)) {
+                if (cache.allocate(this, PoolThreadCache.CacheType.SMALL, buf, reqCapacity)) {
                     // was able to allocate out of the cache so move on
                     return;
                 }
@@ -137,6 +137,10 @@ abstract class PoolArena<T> {
             return;
         }
 
+        if (cache.allocate(this, PoolThreadCache.CacheType.NORMAL, buf, reqCapacity)) {
+            // was able to allocate out of the cache so move on
+            return;
+        }
         allocateNormal(buf, reqCapacity, normCapacity);
     }
 
