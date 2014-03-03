@@ -89,6 +89,8 @@ abstract class PoolArena<T> {
         return new PoolSubpage[size];
     }
 
+    abstract boolean isDirect();
+
     PooledByteBuf<T> allocate(PoolThreadCache cache, int reqCapacity, int maxCapacity) {
         PooledByteBuf<T> buf = newByteBuf(maxCapacity);
         allocate(cache, buf, reqCapacity);
@@ -364,6 +366,11 @@ abstract class PoolArena<T> {
         }
 
         @Override
+        boolean isDirect() {
+            return false;
+        }
+
+        @Override
         protected PoolChunk<byte[]> newChunk(int pageSize, int maxOrder, int pageShifts, int chunkSize) {
             return new PoolChunk<byte[]>(this, new byte[chunkSize], pageSize, maxOrder, pageShifts, chunkSize);
         }
@@ -399,6 +406,11 @@ abstract class PoolArena<T> {
 
         DirectArena(PooledByteBufAllocator parent, int pageSize, int maxOrder, int pageShifts, int chunkSize) {
             super(parent, pageSize, maxOrder, pageShifts, chunkSize);
+        }
+
+        @Override
+        boolean isDirect() {
+            return true;
         }
 
         @Override

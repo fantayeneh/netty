@@ -229,29 +229,23 @@ final class PoolThreadCache {
 
     @SuppressWarnings({ "unchecked", "rawtypes" })
     private PoolChunkCache cacheForTiny(PoolArena area) {
-        if (area == directArena) {
+        if (area.isDirect()) {
             return tinySubPageDirectCache;
         }
-        if (area == heapArena) {
-            return tinySubPageHeapCache;
-        }
-        throw new IllegalStateException("unkown area: " + area);
+        return tinySubPageHeapCache;
     }
 
     @SuppressWarnings({ "unchecked", "rawtypes" })
     private PoolChunkCache cacheForSmall(PoolArena area) {
-        if (area == directArena) {
+        if (area.isDirect()) {
             return smallSubPageDirectCache;
         }
-        if (area == heapArena) {
-            return smallSubPageHeapCache;
-        }
-        throw new IllegalStateException("unkown area: " + area);
+        return smallSubPageHeapCache;
     }
 
     @SuppressWarnings({ "unchecked", "rawtypes" })
     private PoolChunkCache cacheForNormal(PoolArena area, int normCapacity) {
-        if (area == directArena) {
+        if (area.isDirect()) {
             if (normalDirectCaches == null) {
                 return null;
             }
@@ -261,17 +255,14 @@ final class PoolThreadCache {
             }
             return normalDirectCaches[idx];
         }
-        if (area == heapArena) {
-            if (normalHeapCaches == null) {
-                return null;
-            }
-            int idx = index(normCapacity >> valNormalHeap);
-            if (idx > normalHeapCaches.length - 1) {
-                return null;
-            }
-            return normalHeapCaches[idx];
+        if (normalHeapCaches == null) {
+            return null;
         }
-        throw new IllegalStateException("unkown area: " + area);
+        int idx = index(normCapacity >> valNormalHeap);
+        if (idx > normalHeapCaches.length - 1) {
+            return null;
+        }
+        return normalHeapCaches[idx];
     }
 
     /**
