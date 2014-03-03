@@ -29,7 +29,7 @@ abstract class PoolArena<T> {
     private final int maxOrder;
     private final int pageShifts;
     private final int chunkSize;
-    private final int subpageOverflowMask;
+    final int subpageOverflowMask;
 
     private final PoolSubpage<T>[] tinySubpagePools;
     private final PoolSubpage<T>[] smallSubpagePools;
@@ -101,14 +101,14 @@ abstract class PoolArena<T> {
             int tableIdx;
             PoolSubpage<T>[] table;
             if ((normCapacity & 0xFFFFFE00) == 0) { // < 512
-                if (cache.allocate(this, PoolThreadCache.CacheType.TINY, buf, reqCapacity)) {
+                if (cache.allocateTiny(this, buf, reqCapacity)) {
                     // was able to allocate out of the cache so move on
                     return;
                 }
                 tableIdx = normCapacity >>> 4;
                 table = tinySubpagePools;
             } else {
-                if (cache.allocate(this, PoolThreadCache.CacheType.SMALL, buf, reqCapacity)) {
+                if (cache.allocateSmall(this, buf, reqCapacity)) {
                     // was able to allocate out of the cache so move on
                     return;
                 }
@@ -136,11 +136,6 @@ abstract class PoolArena<T> {
             allocateHuge(buf, reqCapacity);
             return;
         }
-
-        if (cache.allocate(this, PoolThreadCache.CacheType.NORMAL, buf, reqCapacity)) {
-            // was able to allocate out of the cache so move on
-            return;
-        }
         allocateNormal(buf, reqCapacity, normCapacity);
     }
 
@@ -163,10 +158,15 @@ abstract class PoolArena<T> {
         buf.initUnpooled(newUnpooledChunk(reqCapacity), reqCapacity);
     }
 
-    void free(PoolChunk<T> chunk, long handle) {
+    void free(PoolChunk<T> chunk, long handle, int normCapacity) {
         if (chunk.unpooled) {
             destroyChunk(chunk);
         } else {
+            PoolThreadCache cache = parent.threadCache.get();
+            if (cache.add(this, chunk, handle, normCapacity)) {
+                // cached so return here
+                return;
+            }
             synchronized (this) {
                 chunk.parent.free(chunk, handle);
             }
@@ -240,7 +240,7 @@ abstract class PoolArena<T> {
         long oldHandle = buf.handle;
         T oldMemory = buf.memory;
         int oldOffset = buf.offset;
-
+        int oldMaxLength = buf.maxLength;
         int readerIndex = buf.readerIndex();
         int writerIndex = buf.writerIndex();
 
@@ -265,7 +265,7 @@ abstract class PoolArena<T> {
         buf.setIndex(readerIndex, writerIndex);
 
         if (freeOldMemory) {
-            free(oldChunk, oldHandle);
+            free(oldChunk, oldHandle, oldMaxLength);
         }
     }
 

@@ -118,7 +118,7 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
                 directArena = null;
             }
 
-            return new PoolThreadCache(heapArena, directArena);
+            return new PoolThreadCache(heapArena, directArena, 128, 128);
         }
     };
 

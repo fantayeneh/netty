@@ -243,6 +243,7 @@ final class PoolChunk<T> {
         int bitmapIdx = (int) (handle >>> 32);
 
         int val = memoryMap[memoryMapIdx];
+
         int state = val & 3;
         if (state == ST_ALLOCATED_SUBPAGE) {
             assert bitmapIdx != 0;
