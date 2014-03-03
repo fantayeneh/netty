@@ -25,10 +25,10 @@ abstract class PoolArena<T> {
 
     final PooledByteBufAllocator parent;
 
-    private final int pageSize;
+    final int pageSize;
     private final int maxOrder;
     private final int pageShifts;
-    private final int chunkSize;
+    final int chunkSize;
     final int subpageOverflowMask;
 
     private final PoolSubpage<T>[] tinySubpagePools;
@@ -97,6 +97,7 @@ abstract class PoolArena<T> {
 
     private void allocate(PoolThreadCache cache, PooledByteBuf<T> buf, final int reqCapacity) {
         final int normCapacity = normalizeCapacity(reqCapacity);
+        boolean triedCache = false;
         if ((normCapacity & subpageOverflowMask) == 0) { // capacity < pageSize
             int tableIdx;
             PoolSubpage<T>[] table;
@@ -105,6 +106,7 @@ abstract class PoolArena<T> {
                     // was able to allocate out of the cache so move on
                     return;
                 }
+                triedCache = true;
                 tableIdx = normCapacity >>> 4;
                 table = tinySubpagePools;
             } else {
@@ -112,6 +114,7 @@ abstract class PoolArena<T> {
                     // was able to allocate out of the cache so move on
                     return;
                 }
+                triedCache = true;
                 tableIdx = 0;
                 int i = normCapacity >>> 10;
                 while (i != 0) {
@@ -133,8 +136,17 @@ abstract class PoolArena<T> {
                 }
             }
         } else if (normCapacity > chunkSize) {
+            // Huge allocations are never served via the cache so just call allocateHuge
             allocateHuge(buf, reqCapacity);
             return;
+        }
+        // Check if the cache was tried before which would be the case if it was a tiny or small allocation request.
+        // In that case there is no need to try again with cached normal allocation.
+        if (!triedCache) {
+            if (cache.allocateNormal(this, buf, reqCapacity, normCapacity)) {
+                // was able to allocate out of the cache so move on
+                return;
+            }
         }
         allocateNormal(buf, reqCapacity, normCapacity);
     }
@@ -164,7 +176,7 @@ abstract class PoolArena<T> {
         } else {
             PoolThreadCache cache = parent.threadCache.get();
             if (cache.add(this, chunk, handle, normCapacity)) {
-                // cached so return here
+                // cached so not free it.
                 return;
             }
             synchronized (this) {
@@ -192,7 +204,7 @@ abstract class PoolArena<T> {
         return table[tableIdx];
     }
 
-    private int normalizeCapacity(int reqCapacity) {
+    int normalizeCapacity(int reqCapacity) {
         if (reqCapacity < 0) {
             throw new IllegalArgumentException("capacity: " + reqCapacity + " (expected: 0+)");
         }

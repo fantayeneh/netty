@@ -118,8 +118,8 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
                 directArena = null;
             }
 
-            // TODO: Make this configurable
-            return new PoolThreadCache(heapArena, directArena, 128, 128);
+            // TODO: Make the cache sizes configurable and even allow the user to disable caches
+            return new PoolThreadCache(heapArena, directArena, 512, 256, 64);
         }
     };
 
