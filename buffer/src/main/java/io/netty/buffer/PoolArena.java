@@ -101,9 +101,17 @@ abstract class PoolArena<T> {
             int tableIdx;
             PoolSubpage<T>[] table;
             if ((normCapacity & 0xFFFFFE00) == 0) { // < 512
+                if (cache.allocateTinySubPage(this, buf, reqCapacity, normCapacity)) {
+                    // was able to allocate out of the cache so move on
+                    return;
+                }
                 tableIdx = normCapacity >>> 4;
                 table = tinySubpagePools;
             } else {
+                if (cache.allocateSmallSubPage(this, buf, reqCapacity, normCapacity)) {
+                    // was able to allocate out of the cache so move on
+                    return;
+                }
                 tableIdx = 0;
                 int i = normCapacity >>> 10;
                 while (i != 0) {
@@ -151,7 +159,7 @@ abstract class PoolArena<T> {
         buf.initUnpooled(newUnpooledChunk(reqCapacity), reqCapacity);
     }
 
-     void free(PoolChunk<T> chunk, long handle) {
+    void free(PoolChunk<T> chunk, long handle) {
         if (chunk.unpooled) {
             destroyChunk(chunk);
         } else {

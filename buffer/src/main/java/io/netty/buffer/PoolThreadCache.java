@@ -24,8 +24,10 @@ final class PoolThreadCache {
     final PoolArena<ByteBuffer> directArena;
 
     // TODO: Lazy init to minimize overhead
-    private final PoolChunkCache<byte[]> smallHeapCache;
-    private final PoolChunkCache<ByteBuffer> smallDirectCache;
+    private final PoolChunkCache<byte[]> tinySubPageHeapCache;
+    private final PoolChunkCache<byte[]> smallSubPageHeapCache;
+    private final PoolChunkCache<ByteBuffer> tinySubPageDirectCache;
+    private final PoolChunkCache<ByteBuffer> smallSubPageDirectCache;
 
     // TODO: Test if adding padding helps under contention
     //private long pad0, pad1, pad2, pad3, pad4, pad5, pad6, pad7;
@@ -34,17 +36,88 @@ final class PoolThreadCache {
         this.heapArena = heapArena;
         this.directArena = directArena;
         if (heapArena != null) {
-            smallHeapCache = new SubPagePoolChunkCache<byte[]>(128);
+            tinySubPageHeapCache = new SubPagePoolChunkCache<byte[]>(128);
+            smallSubPageHeapCache = new SubPagePoolChunkCache<byte[]>(128);
         } else {
-            smallHeapCache = null;
+            tinySubPageHeapCache = null;
+            smallSubPageHeapCache = null;
         }
         if (directArena != null) {
-            smallDirectCache = new SubPagePoolChunkCache<ByteBuffer>(128);
+            tinySubPageDirectCache = new SubPagePoolChunkCache<ByteBuffer>(128);
+            smallSubPageDirectCache = new SubPagePoolChunkCache<ByteBuffer>(128);
         } else {
-            smallDirectCache = null;
+            tinySubPageDirectCache = null;
+            smallSubPageDirectCache = null;
         }
     }
 
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public boolean allocateTinySubPage(PoolArena area, PooledByteBuf buf, int reqCapacity, int normCapacity) {
+        if (area == directArena) {
+            if (tinySubPageDirectCache == null) {
+                return false;
+            }
+            return tinySubPageDirectCache.allocate(buf, reqCapacity, normCapacity);
+        }
+        if (area == heapArena) {
+            if (tinySubPageHeapCache == null) {
+                return false;
+            }
+            return tinySubPageHeapCache.allocate(buf, reqCapacity, normCapacity);
+        }
+        return false;
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public boolean allocateSmallSubPage(PoolArena area, PooledByteBuf buf, int reqCapacity, int normCapacity) {
+        if (area == directArena) {
+            if (smallSubPageDirectCache == null) {
+                return false;
+            }
+            return smallSubPageDirectCache.allocate(buf, reqCapacity, normCapacity);
+        }
+        if (area == heapArena) {
+            if (smallSubPageHeapCache == null) {
+                return false;
+            }
+            return smallSubPageHeapCache.allocate(buf, reqCapacity, normCapacity);
+        }
+        return false;
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public boolean cacheTinySubPage(PoolArena area, PoolChunk chunk, long handle) {
+        if (area == directArena) {
+            if (tinySubPageDirectCache == null) {
+                return false;
+            }
+            return tinySubPageDirectCache.add(chunk, handle);
+        }
+        if (area == heapArena) {
+            if (tinySubPageHeapCache == null) {
+                return false;
+            }
+            return tinySubPageHeapCache.add(chunk, handle);
+        }
+        return false;
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public boolean cacheSmallSubPage(PoolArena area, PoolChunk chunk, long handle) {
+        if (area == directArena) {
+            if (smallSubPageDirectCache == null) {
+                return false;
+            }
+            return smallSubPageDirectCache.add(chunk, handle);
+        }
+        if (area == heapArena) {
+            if (smallSubPageHeapCache == null) {
+                return false;
+            }
+            return smallSubPageHeapCache.add(chunk, handle);
+        }
+        return false;
+    }
 
     final static class SubPagePoolChunkCache<T> extends PoolChunkCache<T> {
         SubPagePoolChunkCache(int size) {
@@ -72,8 +145,8 @@ final class PoolThreadCache {
 
     abstract static class PoolChunkCache<T> {
         private final Entry<T>[] entries;
-        int head;
-        int tail;
+        private int head;
+        private int tail;
 
         @SuppressWarnings("unchecked")
         PoolChunkCache(int size) {
