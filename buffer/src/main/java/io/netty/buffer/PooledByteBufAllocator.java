@@ -16,6 +16,7 @@
 
 package io.netty.buffer;
 
+import io.netty.util.concurrent.EventThread;
 import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.SystemPropertyUtil;
 import io.netty.util.internal.logging.InternalLogger;
@@ -99,6 +100,7 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
     private final PoolArena<ByteBuffer>[] directArenas;
 
     final ThreadLocal<PoolThreadCache> threadCache = new ThreadLocal<PoolThreadCache>() {
+
         private final AtomicInteger index = new AtomicInteger();
         @Override
         protected PoolThreadCache initialValue() {
@@ -119,7 +121,22 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
             }
 
             // TODO: Make the cache sizes configurable and even allow the user to disable caches
-            return new PoolThreadCache(heapArena, directArena, 512, 256, 64);
+            Thread current = Thread.currentThread();
+            if (current instanceof EventThread) {
+                // If the current Thread is an EventThread we use a cache as we can
+                // easily free the cached stuff again once the Thread completes here.
+                final PoolThreadCache cache = new PoolThreadCache(heapArena, directArena, 512, 256, 64);
+                ((EventThread) current).executeAfterRun(new Runnable() {
+                    @Override
+                    public void run() {
+                        cache.free();
+                    }
+                });
+                return cache;
+            } else {
+                // TODO: Maybe handle this with a ReferenceQueue and PhantomReferences and also cache.
+                return new PoolThreadCache(heapArena, directArena, 0, 0, 0);
+            }
         }
     };
 

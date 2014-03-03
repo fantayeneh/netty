@@ -62,18 +62,31 @@ final class PoolThreadCache {
         this.directArena = directArena;
         if (directArena != null) {
             // Create the caches for the direct allocations
-            tinySubPageDirectCache = new SubPagePoolChunkCache<ByteBuffer>(tinyCacheSize);
-            smallSubPageDirectCache = new SubPagePoolChunkCache<ByteBuffer>(smallCacheSize);
+            if (tinyCacheSize > 0) {
+                tinySubPageDirectCache = new SubPagePoolChunkCache<ByteBuffer>(tinyCacheSize);
+            } else {
+                tinySubPageDirectCache = null;
+            }
+            if (smallCacheSize > 0) {
+                smallSubPageDirectCache = new SubPagePoolChunkCache<ByteBuffer>(smallCacheSize);
+            } else {
+                smallSubPageDirectCache = null;
+            }
 
-            valNormalDirect = index(directArena.pageSize);
-            int maxCacheSize = Math.min(directArena.chunkSize, DEFAULT_MAX_CACHE_SIZE);
-            int arraySize = Math.min(DEFAULT_MAX_CACHE_ARRAY_SIZE, maxCacheSize / directArena.pageSize);
-            normalDirectCaches = new PoolChunkCache[arraySize];
-            int size = directArena.pageSize;
-            for (int i = 0; i < normalDirectCaches.length; i++) {
-                normalDirectCaches[index(size) >> valNormalDirect] =
-                        new NormalPoolChunkCache<ByteBuffer>(normalCacheSize);
-                size = directArena.normalizeCapacity(size);
+            if (normalCacheSize > 0) {
+                valNormalDirect = index(directArena.pageSize);
+                int maxCacheSize = Math.min(directArena.chunkSize, DEFAULT_MAX_CACHE_SIZE);
+                int arraySize = Math.min(DEFAULT_MAX_CACHE_ARRAY_SIZE, maxCacheSize / directArena.pageSize);
+                normalDirectCaches = new PoolChunkCache[arraySize];
+                int size = directArena.pageSize;
+                for (int i = 0; i < normalDirectCaches.length; i++) {
+                    normalDirectCaches[index(size) >> valNormalDirect] =
+                            new NormalPoolChunkCache<ByteBuffer>(normalCacheSize);
+                    size = directArena.normalizeCapacity(size);
+                }
+            } else {
+                normalDirectCaches = null;
+                valNormalDirect = -1;
             }
         } else {
             // No directArea is configured so just null out all caches
@@ -84,18 +97,31 @@ final class PoolThreadCache {
         }
         if (heapArena != null) {
             // Create the caches for the heap allocations
-            tinySubPageHeapCache = new SubPagePoolChunkCache<byte[]>(tinyCacheSize);
-            smallSubPageHeapCache = new SubPagePoolChunkCache<byte[]>(smallCacheSize);
+            if (tinyCacheSize > 0) {
+                tinySubPageHeapCache = new SubPagePoolChunkCache<byte[]>(tinyCacheSize);
+            } else {
+                tinySubPageHeapCache = null;
+            }
+            if (smallCacheSize > 0) {
+                smallSubPageHeapCache = new SubPagePoolChunkCache<byte[]>(smallCacheSize);
+            } else {
+                smallSubPageHeapCache = null;
+            }
 
-            valNormalHeap = index(heapArena.pageSize);
-            int maxCacheSize = Math.min(heapArena.chunkSize, DEFAULT_MAX_CACHE_SIZE);
-            int arraySize = Math.min(DEFAULT_MAX_CACHE_ARRAY_SIZE, maxCacheSize / heapArena.pageSize);
-            normalHeapCaches = new PoolChunkCache[arraySize];
-            int size = heapArena.pageSize;
-            for (int i = 0; i < normalHeapCaches.length; i++) {
-                normalHeapCaches[index(size) >> valNormalHeap] =
-                        new NormalPoolChunkCache<byte[]>(normalCacheSize);
-                size = heapArena.normalizeCapacity(size);
+            if (normalCacheSize > 0) {
+                valNormalHeap = index(heapArena.pageSize);
+                int maxCacheSize = Math.min(heapArena.chunkSize, DEFAULT_MAX_CACHE_SIZE);
+                int arraySize = Math.min(DEFAULT_MAX_CACHE_ARRAY_SIZE, maxCacheSize / heapArena.pageSize);
+                normalHeapCaches = new PoolChunkCache[arraySize];
+                int size = heapArena.pageSize;
+                for (int i = 0; i < normalHeapCaches.length; i++) {
+                    normalHeapCaches[index(size) >> valNormalHeap] =
+                            new NormalPoolChunkCache<byte[]>(normalCacheSize);
+                    size = heapArena.normalizeCapacity(size);
+                }
+            } else {
+                normalHeapCaches = null;
+                valNormalHeap = -1;
             }
         } else {
             // No heapArea is configured so just null out all caches
@@ -169,6 +195,36 @@ final class PoolThreadCache {
             return false;
         }
         return cache.add(chunk, handle);
+    }
+
+    /**
+     *  Should be called if the Thread that uses this cache is about to exist to release resources out of the cache
+     */
+    void free() {
+        free(tinySubPageDirectCache);
+        free(smallSubPageDirectCache);
+        free(normalDirectCaches);
+        free(tinySubPageHeapCache);
+        free(smallSubPageHeapCache);
+        free(normalHeapCaches);
+    }
+
+    @SuppressWarnings({ "unchecked", "rawtypes" })
+    private static void free(PoolChunkCache[] caches) {
+        if (caches == null) {
+            return;
+        }
+        for (int i = 0; i < caches.length; i++) {
+            free(caches[i]);
+        }
+    }
+
+    @SuppressWarnings({ "unchecked", "rawtypes" })
+    private static void free(PoolChunkCache cache) {
+        if (cache == null) {
+            return;
+        }
+        cache.clear();
     }
 
     @SuppressWarnings({ "unchecked", "rawtypes" })
@@ -312,6 +368,25 @@ final class PoolThreadCache {
             entry.chunk = null;
             head = nextIdx(head);
             return true;
+        }
+
+        /**
+         * Clear out this cache and free up all previous cached {@link PoolChunk}s and {@code handle}s.
+         */
+        public void clear() {
+            for (int i = tail;; i = nextIdx(i)) {
+                Entry<T> entry = entries[i];
+                PoolChunk<T> chunk = entry.chunk;
+                if (chunk == null) {
+                    // all cleared
+                    break;
+                }
+                // need to synchronize on the area from which it was allocated before.
+                synchronized (chunk.arena) {
+                    chunk.parent.free(chunk, entry.handle);
+                }
+                entry.chunk = null;
+            }
         }
 
         private int nextIdx(int index) {
