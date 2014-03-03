@@ -31,6 +31,7 @@ abstract class PooledByteBuf<T> extends AbstractReferenceCountedByteBuf {
     protected int offset;
     protected int length;
     int maxLength;
+
     private ByteBuffer tmpNioBuf;
 
     protected PooledByteBuf(Recycler.Handle recyclerHandle, int maxCapacity) {
