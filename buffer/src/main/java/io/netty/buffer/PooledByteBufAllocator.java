@@ -34,6 +34,9 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
 
     private static final int DEFAULT_PAGE_SIZE;
     private static final int DEFAULT_MAX_ORDER; // 8192 << 11 = 16 MiB per chunk
+    private static final int DEFAULT_TINY_CACHE_SIZE;
+    private static final int DEFAULT_SMALL_CACHE_SIZE;
+    private static final int DEFAULT_NORMAL_CACHE_SIZE;
 
     private static final int MIN_PAGE_SIZE = 4096;
     private static final int MAX_CHUNK_SIZE = (int) (((long) Integer.MAX_VALUE + 1) / 2);
@@ -76,6 +79,10 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
                                 runtime.availableProcessors(),
                                 PlatformDependent.maxDirectMemory() / defaultChunkSize / 2 / 3)));
 
+        DEFAULT_TINY_CACHE_SIZE = SystemPropertyUtil.getInt("io.netty.allocator.tinyCacheSize", 512);
+        DEFAULT_SMALL_CACHE_SIZE = SystemPropertyUtil.getInt("io.netty.allocator.smallCacheSize", 256);
+        DEFAULT_NORMAL_CACHE_SIZE = SystemPropertyUtil.getInt("io.netty.allocator.normalCacheSize", 64);
+
         if (logger.isDebugEnabled()) {
             logger.debug("-Dio.netty.allocator.numHeapArenas: {}", DEFAULT_NUM_HEAP_ARENA);
             logger.debug("-Dio.netty.allocator.numDirectArenas: {}", DEFAULT_NUM_DIRECT_ARENA);
@@ -90,6 +97,9 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
                 logger.debug("-Dio.netty.allocator.maxOrder: {}", DEFAULT_MAX_ORDER, maxOrderFallbackCause);
             }
             logger.debug("-Dio.netty.allocator.chunkSize: {}", DEFAULT_PAGE_SIZE << DEFAULT_MAX_ORDER);
+            logger.debug("-Dio.netty.allocator.tinyCacheSize: {}", DEFAULT_TINY_CACHE_SIZE);
+            logger.debug("-Dio.netty.allocator.smallCacheSize: {}", DEFAULT_SMALL_CACHE_SIZE);
+            logger.debug("-Dio.netty.allocator.normalCacheSize: {}", DEFAULT_NORMAL_CACHE_SIZE);
         }
     }
 
@@ -98,6 +108,9 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
 
     private final PoolArena<byte[]>[] heapArenas;
     private final PoolArena<ByteBuffer>[] directArenas;
+    private final int tinyCacheSize;
+    private final int smallCacheSize;
+    private final int normalCacheSize;
 
     final ThreadLocal<PoolThreadCache> threadCache = new ThreadLocal<PoolThreadCache>() {
 
@@ -125,7 +138,8 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
             if (current instanceof EventThread) {
                 // If the current Thread is an EventThread we use a cache as we can
                 // easily free the cached stuff again once the Thread completes here.
-                final PoolThreadCache cache = new PoolThreadCache(heapArena, directArena, 512, 256, 64);
+                final PoolThreadCache cache =
+                        new PoolThreadCache(heapArena, directArena, tinyCacheSize, smallCacheSize, normalCacheSize);
                 ((EventThread) current).executeAfterRun(new Runnable() {
                     @Override
                     public void run() {
@@ -153,8 +167,16 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
     }
 
     public PooledByteBufAllocator(boolean preferDirect, int nHeapArena, int nDirectArena, int pageSize, int maxOrder) {
-        super(preferDirect);
+        this(preferDirect, nHeapArena, nDirectArena, pageSize, maxOrder,
+                DEFAULT_TINY_CACHE_SIZE, DEFAULT_SMALL_CACHE_SIZE, DEFAULT_NORMAL_CACHE_SIZE);
+    }
 
+    public PooledByteBufAllocator(boolean preferDirect, int nHeapArena, int nDirectArena, int pageSize, int maxOrder,
+                                  int tinyCacheSize, int smallCacheSize, int normalCacheSize) {
+        super(preferDirect);
+        this.tinyCacheSize = tinyCacheSize;
+        this.smallCacheSize = smallCacheSize;
+        this.normalCacheSize = normalCacheSize;
         final int chunkSize = validateAndCalculateChunkSize(pageSize, maxOrder);
 
         if (nHeapArena < 0) {
