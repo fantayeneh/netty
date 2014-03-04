@@ -92,7 +92,7 @@ public abstract class SingleThreadEventExecutor extends AbstractEventExecutor {
         this.parent = parent;
         this.addTaskWakesUp = addTaskWakesUp;
 
-        thread = threadFactory.newThread(new Runnable() {
+        thread = threadFactory.newThread(new EventExecutorRunnable(this) {
             @Override
             public void run() {
                 boolean success = false;

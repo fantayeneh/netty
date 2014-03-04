@@ -25,14 +25,6 @@ import java.nio.ByteBuffer;
  * 480222803919">Scalable memory allocation using jemalloc</a>.
  */
 final class PoolThreadCache {
-    // 32 kb is the maximum of size which is cached. Similar to what is explained in
-    // 'Scalable memory allocation using jemalloc'
-    // TODO: Maybe we should make this configurable
-    private static final int DEFAULT_MAX_CACHE_SIZE = 32 * 1024;
-    // Maximal of 4 different size caches of normal allocations
-    // TODO: Maybe we should make this configurable
-    private static final int DEFAULT_MAX_CACHE_ARRAY_SIZE = 4;
-
     final PoolArena<byte[]> heapArena;
     final PoolArena<ByteBuffer> directArena;
 
@@ -57,7 +49,14 @@ final class PoolThreadCache {
 
     @SuppressWarnings({ "unchecked", "rawtypes " })
     PoolThreadCache(PoolArena<byte[]> heapArena, PoolArena<ByteBuffer> directArena,
-                    int tinyCacheSize, int smallCacheSize, int normalCacheSize) {
+                    int tinyCacheSize, int smallCacheSize, int normalCacheSize,
+                    int maxCacheSize, int maxCacheArraySize) {
+        if (maxCacheSize < 1) {
+            throw new IllegalArgumentException("maxCacheSize: " + maxCacheSize + " (expected: >= 0)");
+        }
+        if (maxCacheArraySize < 1) {
+            throw new IllegalArgumentException("maxCacheArraySize: " + maxCacheArraySize + " (expected: >= 0)");
+        }
         this.heapArena = heapArena;
         this.directArena = directArena;
         if (directArena != null) {
@@ -75,8 +74,8 @@ final class PoolThreadCache {
 
             if (normalCacheSize > 0) {
                 valNormalDirect = index(directArena.pageSize);
-                int maxCacheSize = Math.min(directArena.chunkSize, DEFAULT_MAX_CACHE_SIZE);
-                int arraySize = Math.min(DEFAULT_MAX_CACHE_ARRAY_SIZE, maxCacheSize / directArena.pageSize);
+                int max = Math.min(directArena.chunkSize, maxCacheSize);
+                int arraySize = Math.min(maxCacheArraySize, max / directArena.pageSize);
                 normalDirectCaches = new PoolChunkCache[arraySize];
                 int size = directArena.pageSize;
                 for (int i = 0; i < normalDirectCaches.length; i++) {
@@ -110,8 +109,8 @@ final class PoolThreadCache {
 
             if (normalCacheSize > 0) {
                 valNormalHeap = index(heapArena.pageSize);
-                int maxCacheSize = Math.min(heapArena.chunkSize, DEFAULT_MAX_CACHE_SIZE);
-                int arraySize = Math.min(DEFAULT_MAX_CACHE_ARRAY_SIZE, maxCacheSize / heapArena.pageSize);
+                int max = Math.min(heapArena.chunkSize, maxCacheSize);
+                int arraySize = Math.min(maxCacheArraySize, max / heapArena.pageSize);
                 normalHeapCaches = new PoolChunkCache[arraySize];
                 int size = heapArena.pageSize;
                 for (int i = 0; i < normalHeapCaches.length; i++) {
@@ -227,6 +226,33 @@ final class PoolThreadCache {
         cache.clear();
     }
 
+    void freeUpIfNecessary() {
+        freeUpIfNecessary(tinySubPageDirectCache);
+        freeUpIfNecessary(smallSubPageDirectCache);
+        freeUpIfNecessary(normalDirectCaches);
+        freeUpIfNecessary(tinySubPageHeapCache);
+        freeUpIfNecessary(smallSubPageHeapCache);
+        freeUpIfNecessary(normalHeapCaches);
+    }
+
+    @SuppressWarnings({ "unchecked", "rawtypes" })
+    private static void freeUpIfNecessary(PoolChunkCache[] caches) {
+        if (caches == null) {
+            return;
+        }
+        for (int i = 0; i < caches.length; i++) {
+            freeUpIfNecessary(caches[i]);
+        }
+    }
+
+    @SuppressWarnings({ "unchecked", "rawtypes" })
+    private static void freeUpIfNecessary(PoolChunkCache cache) {
+        if (cache == null) {
+            return;
+        }
+        cache.freeUpIfNeeded();
+    }
+
     @SuppressWarnings({ "unchecked", "rawtypes" })
     private PoolChunkCache cacheForTiny(PoolArena area) {
         if (area.isDirect()) {
@@ -311,6 +337,7 @@ final class PoolThreadCache {
         private final Entry<T>[] entries;
         private int head;
         private int tail;
+        private int allocations;
 
         @SuppressWarnings("unchecked")
         PoolChunkCache(int size) {
@@ -354,6 +381,7 @@ final class PoolThreadCache {
             if (entry.chunk == null) {
                 return false;
             }
+            allocations++;
             initBuf(entry.chunk, entry.handle, buf, reqCapacity);
             // only null out the chunk as we only use the chunk to check if the buffer is full or not.
             entry.chunk = null;
@@ -365,19 +393,50 @@ final class PoolThreadCache {
          * Clear out this cache and free up all previous cached {@link PoolChunk}s and {@code handle}s.
          */
         public void clear() {
-            for (int i = tail;; i = nextIdx(i)) {
-                Entry<T> entry = entries[i];
-                PoolChunk<T> chunk = entry.chunk;
-                if (chunk == null) {
+            allocations = 0;
+            for (int i = head;; i = nextIdx(i)) {
+                if (!freeEntry(entries[i])) {
                     // all cleared
-                    break;
+                    return;
                 }
-                // need to synchronize on the area from which it was allocated before.
-                synchronized (chunk.arena) {
-                    chunk.parent.free(chunk, entry.handle);
-                }
-                entry.chunk = null;
             }
+        }
+
+        /**
+         * Free up cached {@link PoolChunk}s if not allocated frequently enough.
+         */
+        public void freeUpIfNeeded() {
+            int allocs = allocations;
+            allocations = 0;
+
+            // free up all cached buffers until it match the allocation count over the last perioid
+            if (allocs < size()) {
+                for (int i = head; allocs > 0; i = nextIdx(i)) {
+                    if (!freeEntry(entries[i])) {
+                        // all freed
+                        return;
+                    }
+                    allocs--;
+                }
+            }
+        }
+
+        @SuppressWarnings({ "unchecked", "rawtypes" })
+        private static boolean freeEntry(Entry entry) {
+            PoolChunk chunk = entry.chunk;
+            if (chunk == null) {
+                return false;
+            }
+            // need to synchronize on the area from which it was allocated before.
+            synchronized (chunk.arena) {
+                chunk.parent.free(chunk, entry.handle);
+            }
+            entry.chunk = null;
+            return true;
+        }
+
+        public int size()  {
+            return tail - head & entries.length - 1;
         }
 
         private int nextIdx(int index) {
