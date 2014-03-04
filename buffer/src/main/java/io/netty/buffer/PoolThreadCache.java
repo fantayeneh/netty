@@ -51,10 +51,10 @@ final class PoolThreadCache {
     PoolThreadCache(PoolArena<byte[]> heapArena, PoolArena<ByteBuffer> directArena,
                     int tinyCacheSize, int smallCacheSize, int normalCacheSize,
                     int maxCacheSize, int maxCacheArraySize) {
-        if (maxCacheSize < 1) {
+        if (maxCacheSize < 0) {
             throw new IllegalArgumentException("maxCacheSize: " + maxCacheSize + " (expected: >= 0)");
         }
-        if (maxCacheArraySize < 1) {
+        if (maxCacheArraySize < 0) {
             throw new IllegalArgumentException("maxCacheArraySize: " + maxCacheArraySize + " (expected: >= 0)");
         }
         this.heapArena = heapArena;
