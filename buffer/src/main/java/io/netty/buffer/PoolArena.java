@@ -25,12 +25,13 @@ abstract class PoolArena<T> {
 
     final PooledByteBufAllocator parent;
 
-    final int pageSize;
     private final int maxOrder;
-    private final int pageShifts;
+    final int pageSize;
+    final int pageShifts;
     final int chunkSize;
     final int subpageOverflowMask;
-
+    final int numTinySubpagePools;
+    final int numSmallSubpagePools;
     private final PoolSubpage<T>[] tinySubpagePools;
     private final PoolSubpage<T>[] smallSubpagePools;
 
@@ -51,13 +52,14 @@ abstract class PoolArena<T> {
         this.pageShifts = pageShifts;
         this.chunkSize = chunkSize;
         subpageOverflowMask = ~(pageSize - 1);
-
-        tinySubpagePools = newSubpagePoolArray(512 >>> 4);
+        numTinySubpagePools = 512 >>> 4;
+        tinySubpagePools = newSubpagePoolArray(numTinySubpagePools);
         for (int i = 0; i < tinySubpagePools.length; i ++) {
             tinySubpagePools[i] = newSubpagePoolHead(pageSize);
         }
 
-        smallSubpagePools = newSubpagePoolArray(pageShifts - 9);
+        numSmallSubpagePools = pageShifts - 9;
+        smallSubpagePools = newSubpagePoolArray(numSmallSubpagePools);
         for (int i = 0; i < smallSubpagePools.length; i ++) {
             smallSubpagePools[i] = newSubpagePoolHead(pageSize);
         }
@@ -97,32 +99,51 @@ abstract class PoolArena<T> {
         return buf;
     }
 
+    static int tinyIdx(int normCapacity) {
+        return normCapacity >>> 4;
+    }
+
+    static int smallIdx(int normCapacity) {
+        int tableIdx = 0;
+        int i = normCapacity >>> 10;
+        while (i != 0) {
+            i >>>= 1;
+            tableIdx ++;
+        }
+        return tableIdx;
+    }
+
+    // capacity < pageSize
+    boolean isTinyOrSmall(int normCapacity) {
+        return (normCapacity & subpageOverflowMask) == 0;
+    }
+
+    // normCapacity < 512
+    static boolean isTiny(int normCapacity) {
+        return (normCapacity & 0xFFFFFE00) == 0;
+    }
+
     private void allocate(PoolThreadCache cache, PooledByteBuf<T> buf, final int reqCapacity) {
         final int normCapacity = normalizeCapacity(reqCapacity);
         boolean triedCache = false;
-        if ((normCapacity & subpageOverflowMask) == 0) { // capacity < pageSize
+        if (isTinyOrSmall(normCapacity)) { // capacity < pageSize
             int tableIdx;
             PoolSubpage<T>[] table;
-            if ((normCapacity & 0xFFFFFE00) == 0) { // < 512
-                if (cache.allocateTiny(this, buf, reqCapacity)) {
+            if (isTiny(normCapacity)) { // < 512
+                if (cache.allocateTiny(this, buf, reqCapacity, normCapacity)) {
                     // was able to allocate out of the cache so move on
                     return;
                 }
                 triedCache = true;
-                tableIdx = normCapacity >>> 4;
+                tableIdx = tinyIdx(normCapacity);
                 table = tinySubpagePools;
             } else {
-                if (cache.allocateSmall(this, buf, reqCapacity)) {
+                if (cache.allocateSmall(this, buf, reqCapacity, normCapacity)) {
                     // was able to allocate out of the cache so move on
                     return;
                 }
                 triedCache = true;
-                tableIdx = 0;
-                int i = normCapacity >>> 10;
-                while (i != 0) {
-                    i >>>= 1;
-                    tableIdx ++;
-                }
+                tableIdx = smallIdx(normCapacity);
                 table = smallSubpagePools;
             }
 
@@ -190,7 +211,7 @@ abstract class PoolArena<T> {
     PoolSubpage<T> findSubpagePoolHead(int elemSize) {
         int tableIdx;
         PoolSubpage<T>[] table;
-        if ((elemSize & 0xFFFFFE00) == 0) { // < 512
+        if (isTiny(elemSize)) { // < 512
             tableIdx = elemSize >>> 4;
             table = tinySubpagePools;
         } else {
@@ -214,7 +235,7 @@ abstract class PoolArena<T> {
             return reqCapacity;
         }
 
-        if ((reqCapacity & 0xFFFFFE00) != 0) { // >= 512
+        if (!isTiny(reqCapacity)) { // >= 512
             // Doubled
 
             int normalizedCapacity = reqCapacity;
